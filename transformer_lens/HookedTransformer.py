@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import tqdm.auto as tqdm
 from fancy_einsum import einsum
-from jaxtyping import Float, Int
+from jaxtyping import Float, Int, Bool
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from typeguard import typeguard_ignore
 from typing_extensions import Literal
@@ -283,8 +283,17 @@ class HookedTransformer(HookedRootModule):
             # If tokens are a rank 1 tensor, add a dummy batch dimension to avoid things breaking.
             tokens = tokens[None]
         if tokens.device.type != self.cfg.device:
-            tokens = tokens.to(devices.get_device_for_block_index(0, self.cfg))
-
+            tokens = tokens.to(devices.get_device_for_block_index(0, self.cfg)) 
+            
+        if self.tokenizer.padding_side == 'left':
+            attention_mask = self.get_attention_mask(tokens, prepend_bos)
+            
+            num_nonpad_tokens = attention_mask.sum(dim=1)
+            left_offset = tokens.shape[0] - num_nonpad_tokens
+        else:
+            attention_mask = None
+            left_offset = None
+                 
         # If we're doing caching, then we reuse keys and values from previous runs, as that's the only
         # way that past activations will affect the final logits. The cache contains those so we don't
         # need to recompute them. This is useful for generating text. As we have absolute positional
@@ -314,7 +323,7 @@ class HookedTransformer(HookedRootModule):
         embed = self.hook_embed(self.embed(tokens))  # [batch, pos, d_model]
         if self.cfg.positional_embedding_type == "standard":
             pos_embed = self.hook_pos_embed(
-                self.pos_embed(tokens, pos_offset)
+                self.pos_embed(tokens, pos_offset, left_offset)
             )  # [batch, pos, d_model]
             residual = embed + pos_embed  # [batch, pos, d_model]
             shortformer_pos_embed = None
@@ -322,7 +331,7 @@ class HookedTransformer(HookedRootModule):
             # If we're using shortformer style attention, we don't add the positional embedding to the residual stream.
             # See HookedTransformerConfig for details
             pos_embed = self.hook_pos_embed(
-                self.pos_embed(tokens, pos_offset)
+                self.pos_embed(tokens, pos_offset, left_offset)
             )  # [batch, pos, d_model]
             residual = embed
             shortformer_pos_embed = pos_embed
@@ -361,6 +370,7 @@ class HookedTransformer(HookedRootModule):
                 if past_kv_cache is not None
                 else None,  # Cache contains a list of HookedTransformerKeyValueCache objects, one for each block
                 shortformer_pos_embed=shortformer_pos_embed,
+                attention_mask=attention_mask,
             )  # [batch, pos, d_model]
 
         if stop_at_layer is not None:
@@ -620,6 +630,20 @@ class HookedTransformer(HookedRootModule):
         token = self.to_str_tokens(torch.tensor([int_token]))
         assert len(token) == 1
         return token[0]
+    
+    def get_attention_mask(
+            self,
+            tokens: Float[torch.Tensor, "batch pos"],
+            prepend_bos: Optional[bool] = None,
+    ) -> Bool[torch.Tensor, "batch pos"]:
+        prepend_bos = utils.overwrite_or_global_flag(prepend_bos, self.prepend_bos)
+
+        attention_mask = tokens.ne(self.tokenizer.pad_token_id)
+        
+        if prepend_bos and self.tokenizer.bos_token == self.tokenizer.pad_token:
+            attention_mask[:, 0] = True
+        
+        return attention_mask
 
     def get_token_position(
         self,

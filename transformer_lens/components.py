@@ -8,14 +8,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from fancy_einsum import einsum
-from jaxtyping import Float, Int
+from jaxtyping import Float, Int, Bool
 from typeguard import typeguard_ignore
 
 from transformer_lens.FactoredMatrix import FactoredMatrix
 from transformer_lens.hook_points import HookPoint
 from transformer_lens.HookedTransformerConfig import HookedTransformerConfig
 from transformer_lens.past_key_value_caching import HookedTransformerKeyValueCacheEntry
-from transformer_lens.utils import gelu_fast, gelu_new, solu
+from transformer_lens.utils import gelu_fast, gelu_new, solu, Slice
 
 
 # Embed & Unembed
@@ -74,20 +74,35 @@ class PosEmbed(nn.Module):
         self.W_pos = nn.Parameter(torch.empty(self.cfg.n_ctx, self.cfg.d_model))
 
     def forward(
-        self, tokens: Int[torch.Tensor, "batch pos"], past_kv_pos_offset: int = 0
+        self,
+        tokens: Int[torch.Tensor, "batch pos"],
+        past_kv_pos_offset: int = 0,
+        left_offset: Optional[Int[torch.Tensor, "batch"]] = None,
     ) -> Float[torch.Tensor, "batch pos d_model"]:
         """Tokens have shape [batch, pos]
         past_kv_pos_offset is the length of tokens in the past_kv_cache (if used, defaults to zero if unused)
         Output shape [pos, d_model] - will be broadcast along batch dim"""
 
         tokens_length = tokens.size(-1)
-        pos_embed = self.W_pos[
-            past_kv_pos_offset : tokens_length + past_kv_pos_offset, :
-        ]  # [pos, d_model]
-        broadcast_pos_embed = einops.repeat(
-            pos_embed, "pos d_model -> batch pos d_model", batch=tokens.size(0)
-        )  # [batch, pos, d_model]
-        return broadcast_pos_embed.clone()
+        
+        if left_offset is None:
+            pos_embed = self.W_pos[
+                past_kv_pos_offset : tokens_length + past_kv_pos_offset, :
+            ]  # [pos, d_model]
+            batch_pos_embed = einops.repeat(
+                pos_embed, "pos d_model -> batch pos d_model", batch=tokens.size(0)
+            )
+        
+        else:
+            slice_indices = left_offset[:, None] + torch.tensor(
+                [[past_kv_pos_offset, tokens_length + past_kv_pos_offset]],
+                device=left_offset.device
+            )  # [batch, 2]
+            slice_tuples = [tuple(slice.tolist()) for slice in slice_indices]
+
+            batch_pos_embed = torch.stack([Slice(slice).apply(self.W_pos, dim=0) for slice in slice_tuples]) # [batch, pos, d_model]
+            
+        return batch_pos_embed.clone()
 
 
 class TokenTypeEmbed(nn.Module):
@@ -460,6 +475,7 @@ class Attention(nn.Module):
         ],
         past_kv_cache_entry: Optional[HookedTransformerKeyValueCacheEntry] = None,
         additive_attention_mask: Float[torch.Tensor, "batch 1 1 pos"] = None,
+        attention_mask: Int[torch.Tensor, "batch pos"] = None,
     ) -> Float[torch.Tensor, "batch pos d_model"]:
         """
         shortformer_pos_embed is only used if self.cfg.positional_embedding_type == "shortformer", else defaults to None and is irrelevant. See HookedTransformerConfig for more details
@@ -524,7 +540,7 @@ class Attention(nn.Module):
         if self.cfg.attention_dir == "causal":
             # If causal attention, we mask it to only attend backwards. If bidirectional, we don't mask.
             attn_scores = self.apply_causal_mask(
-                attn_scores, kv_cache_pos_offset
+                attn_scores, kv_cache_pos_offset, attention_mask
             )  # [batch, head_index, query_pos, key_pos]
         if additive_attention_mask is not None:
             attn_scores += additive_attention_mask
@@ -581,6 +597,7 @@ class Attention(nn.Module):
             torch.Tensor, "batch head_index pos pos_plus_past_kv_pos_offset"
         ],
         past_kv_pos_offset: int = 0,
+        attention_mask: Optional[Bool[torch.Tensor, "batch pos"]] = None,
     ):
         # The query context length is the number of positions we take queries from - if not using a past_kv_cache this is just the context length (for the current prompt), but if we're caching it's just a single token.
         query_ctx_length = attn_scores.size(-2)
@@ -591,14 +608,39 @@ class Attention(nn.Module):
         assert (
             query_ctx_length + past_kv_pos_offset == key_ctx_length
         ), f"query_ctx_length {query_ctx_length} + past_kv_pos_offset {past_kv_pos_offset} != key_ctx_length {key_ctx_length} - you likely have a bug."
-        return torch.where(
-            self.mask[
-                past_kv_pos_offset : past_kv_pos_offset + query_ctx_length,
-                :key_ctx_length,
-            ],
-            attn_scores,
-            self.IGNORE,
-        )
+        
+        if attention_mask is None:
+            masked_attn_scores = torch.where(
+                self.mask[
+                    past_kv_pos_offset : past_kv_pos_offset + query_ctx_length,
+                    :key_ctx_length,
+                ],
+                attn_scores,
+                self.IGNORE,
+            )
+        
+        # attention_mask is not None when left padding is used
+        else:
+            batched_causal_mask = einops.repeat(self.mask, "n_ctx1 n_ctx2 -> batch n_ctx1 n_ctx2", batch=attention_mask.size(0))
+            full_attention_mask = einsum('batch pos1, batch pos2 -> batch pos1 pos2', attention_mask, attention_mask)
+            pos = attention_mask.size(1)
+            batched_causal_mask = batched_causal_mask.clone()
+            batched_causal_mask[:, :pos, :pos] *= full_attention_mask
+            
+            full_causal_mask = batched_causal_mask.unsqueeze(1)  # [batch, 1, n_ctx, n_ctx]
+            
+            masked_attn_scores = torch.where(
+                full_causal_mask[
+                    :,
+                    :,
+                    past_kv_pos_offset : past_kv_pos_offset + query_ctx_length,
+                    :key_ctx_length
+                ].bool(),
+                attn_scores,
+                self.IGNORE,
+            )
+            
+        return masked_attn_scores
 
     def rotary_rotate_qk(
         self,
@@ -879,6 +921,7 @@ class TransformerBlock(nn.Module):
             Float[torch.Tensor, "batch pos d_model"]
         ] = None,
         past_kv_cache_entry: Optional[HookedTransformerKeyValueCacheEntry] = None,
+        attention_mask: Optional[Bool[torch.Tensor, "batch pos"]] = None,
     ) -> Float[torch.Tensor, "batch pos d_model"]:
         """A single Transformer block.
 
@@ -923,6 +966,7 @@ class TransformerBlock(nn.Module):
                 + (0.0 if shortformer_pos_embed is None else shortformer_pos_embed),
                 value_input=self.ln1(value_input),
                 past_kv_cache_entry=past_kv_cache_entry,
+                attention_mask=attention_mask,
             )
         )  # [batch, pos, d_model]
         if not self.cfg.attn_only and not self.cfg.parallel_attn_mlp:
