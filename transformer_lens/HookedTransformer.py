@@ -627,20 +627,24 @@ class HookedTransformer(HookedRootModule):
         token = self.to_str_tokens(torch.tensor([int_token]))
         assert len(token) == 1
         return token[0]
-    
-    def get_attention_mask(
-            self,
-            tokens: Float[torch.Tensor, "batch pos"],
-            prepend_bos: Optional[bool] = None,
-    ) -> Bool[torch.Tensor, "batch pos"]:
-        prepend_bos = utils.overwrite_or_global_flag(prepend_bos, self.prepend_bos)
 
+    def get_attention_mask(
+        self,
+        tokens: Float[torch.Tensor, "batch pos"],
+    ) -> ibool[torch.Tensor, "batch pos"]:
         attention_mask = tokens.ne(self.tokenizer.pad_token_id)
-        
-        if prepend_bos and self.tokenizer.bos_token == self.tokenizer.pad_token:
-            attention_mask[:, 0] = True
-        
-        return attention_mask
+
+        if self.tokenizer.bos_token_id == self.tokenizer.pad_token_id:
+            is_pad_token = 1 - attention_mask.int()
+            bos_is_prepended = is_pad_token.sum(dim=-1).eq(0).any().item()
+
+            if bos_is_prepended:
+                pad_bos_positions = is_pad_token.cumsum(dim=-1).argmax(dim=-1)
+                attention_mask[
+                    torch.arange(attention_mask.shape[0]), pad_bos_positions
+                ] = True
+
+        return attention_mask.int()
 
     def get_token_position(
         self,
