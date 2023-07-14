@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import tqdm.auto as tqdm
 from fancy_einsum import einsum
-from jaxtyping import Float, Int, Bool
+from jaxtyping import Bool, Float, Int
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from typeguard import typeguard_ignore
 from typing_extensions import Literal
@@ -283,6 +283,7 @@ class HookedTransformer(HookedRootModule):
             # If tokens are a rank 1 tensor, add a dummy batch dimension to avoid things breaking.
             tokens = tokens[None]
         if tokens.device.type != self.cfg.device:
+            tokens = tokens.to(devices.get_device_for_block_index(0, self.cfg))
 
         if tokenizer.padding_side == "left":
             attention_mask = self.get_attention_mask(tokens)

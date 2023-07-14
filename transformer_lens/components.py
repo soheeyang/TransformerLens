@@ -8,14 +8,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from fancy_einsum import einsum
-from jaxtyping import Float, Int, Bool
+from jaxtyping import Bool, Float, Int
 from typeguard import typeguard_ignore
 
 from transformer_lens.FactoredMatrix import FactoredMatrix
 from transformer_lens.hook_points import HookPoint
 from transformer_lens.HookedTransformerConfig import HookedTransformerConfig
 from transformer_lens.past_key_value_caching import HookedTransformerKeyValueCacheEntry
-from transformer_lens.utils import gelu_fast, gelu_new, solu, Slice
+from transformer_lens.utils import Slice, gelu_fast, gelu_new, solu
 
 
 # Embed & Unembed
@@ -100,8 +100,10 @@ class PosEmbed(nn.Module):
             )  # [batch, 2]
             slice_tuples = [tuple(slice.tolist()) for slice in slice_indices]
 
-            batch_pos_embed = torch.stack([Slice(slice).apply(self.W_pos, dim=0) for slice in slice_tuples]) # [batch, pos, d_model]
-            
+            batch_pos_embed = torch.stack(
+                [Slice(slice).apply(self.W_pos, dim=0) for slice in slice_tuples]
+            )  # [batch, pos, d_model]
+
         return batch_pos_embed.clone()
 
 
@@ -608,7 +610,7 @@ class Attention(nn.Module):
         assert (
             query_ctx_length + past_kv_pos_offset == key_ctx_length
         ), f"query_ctx_length {query_ctx_length} + past_kv_pos_offset {past_kv_pos_offset} != key_ctx_length {key_ctx_length} - you likely have a bug."
-        
+
         if attention_mask is None:
             masked_attn_scores = torch.where(
                 self.mask[
@@ -618,28 +620,36 @@ class Attention(nn.Module):
                 attn_scores,
                 self.IGNORE,
             )
-        
+
         # attention_mask is not None when left padding is used
         else:
-            batched_causal_mask = einops.repeat(self.mask, "n_ctx1 n_ctx2 -> batch n_ctx1 n_ctx2", batch=attention_mask.size(0))
-            full_attention_mask = einsum('batch pos1, batch pos2 -> batch pos1 pos2', attention_mask, attention_mask)
+            batched_causal_mask = einops.repeat(
+                self.mask,
+                "n_ctx1 n_ctx2 -> batch n_ctx1 n_ctx2",
+                batch=attention_mask.size(0),
+            )
+            kv_attention_mask = einsum(
+                "batch pos1, batch pos2 -> batch pos1 pos2",
+                attention_mask,
+                attention_mask,
+            )
             pos = attention_mask.size(1)
             batched_causal_mask = batched_causal_mask.clone()
-            batched_causal_mask[:, :pos, :pos] *= full_attention_mask
-            
-            full_causal_mask = batched_causal_mask.unsqueeze(1)  # [batch, 1, n_ctx, n_ctx]
-            
+            batched_causal_mask[:, :pos, :pos] *= kv_attention_mask
+
+            final_mask = batched_causal_mask.unsqueeze(1)  # [batch, 1, n_ctx, n_ctx]
+
             masked_attn_scores = torch.where(
-                full_causal_mask[
+                final_mask[
                     :,
                     :,
                     past_kv_pos_offset : past_kv_pos_offset + query_ctx_length,
-                    :key_ctx_length
+                    :key_ctx_length,
                 ].bool(),
                 attn_scores,
                 self.IGNORE,
             )
-            
+
         return masked_attn_scores
 
     def rotary_rotate_qk(
