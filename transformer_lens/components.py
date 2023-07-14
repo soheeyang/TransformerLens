@@ -77,26 +77,26 @@ class PosEmbed(nn.Module):
         self,
         tokens: Int[torch.Tensor, "batch pos"],
         past_kv_pos_offset: int = 0,
-        left_offset: Optional[Int[torch.Tensor, "batch"]] = None,
+        first_attended_token_positions: Optional[Int[torch.Tensor, "batch"]] = None,
     ) -> Float[torch.Tensor, "batch pos d_model"]:
         """Tokens have shape [batch, pos]
         past_kv_pos_offset is the length of tokens in the past_kv_cache (if used, defaults to zero if unused)
         Output shape [pos, d_model] - will be broadcast along batch dim"""
 
         tokens_length = tokens.size(-1)
-        
-        if left_offset is None:
+
+        if first_attended_token_positions is None:
             pos_embed = self.W_pos[
                 past_kv_pos_offset : tokens_length + past_kv_pos_offset, :
             ]  # [pos, d_model]
             batch_pos_embed = einops.repeat(
                 pos_embed, "pos d_model -> batch pos d_model", batch=tokens.size(0)
             )
-        
+
         else:
-            slice_indices = left_offset[:, None] + torch.tensor(
+            slice_indices = first_attended_token_positions[:, None] + torch.tensor(
                 [[past_kv_pos_offset, tokens_length + past_kv_pos_offset]],
-                device=left_offset.device
+                device=first_attended_token_positions.device,
             )  # [batch, 2]
             slice_tuples = [tuple(slice.tolist()) for slice in slice_indices]
 
