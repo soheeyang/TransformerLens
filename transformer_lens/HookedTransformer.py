@@ -286,10 +286,10 @@ class HookedTransformer(HookedRootModule):
             tokens = tokens.to(devices.get_device_for_block_index(0, self.cfg))
 
         if tokenizer.padding_side == "left":
-            attention_mask = self.get_attention_mask(tokens)
+            left_attention_mask = self.get_left_attention_mask(tokens)
             first_attended_token_positions = (1 - attention_mask).sum(dim=-1)
         else:
-            attention_mask = None
+            left_attention_mask = None
             first_attended_token_positions = None
 
         # If we're doing caching, then we reuse keys and values from previous runs, as that's the only
@@ -368,7 +368,7 @@ class HookedTransformer(HookedRootModule):
                 if past_kv_cache is not None
                 else None,  # Cache contains a list of HookedTransformerKeyValueCache objects, one for each block
                 shortformer_pos_embed=shortformer_pos_embed,
-                attention_mask=attention_mask,
+                left_attention_mask=left_attention_mask,
             )  # [batch, pos, d_model]
 
         if stop_at_layer is not None:
@@ -629,7 +629,7 @@ class HookedTransformer(HookedRootModule):
         assert len(token) == 1
         return token[0]
 
-    def get_attention_mask(
+    def get_left_attention_mask(
         self,
         tokens: Float[torch.Tensor, "batch pos"],
     ) -> ibool[torch.Tensor, "batch pos"]:

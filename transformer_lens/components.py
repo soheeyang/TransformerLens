@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from fancy_einsum import einsum
-from jaxtyping import Bool, Float, Int
+from jaxtyping import Float, Int
 from typeguard import typeguard_ignore
 
 from transformer_lens.FactoredMatrix import FactoredMatrix
@@ -477,7 +477,7 @@ class Attention(nn.Module):
         ],
         past_kv_cache_entry: Optional[HookedTransformerKeyValueCacheEntry] = None,
         additive_attention_mask: Float[torch.Tensor, "batch 1 1 pos"] = None,
-        attention_mask: Int[torch.Tensor, "batch pos"] = None,
+        left_attention_mask: Int[torch.Tensor, "batch pos"] = None,
     ) -> Float[torch.Tensor, "batch pos d_model"]:
         """
         shortformer_pos_embed is only used if self.cfg.positional_embedding_type == "shortformer", else defaults to None and is irrelevant. See HookedTransformerConfig for more details
@@ -542,7 +542,7 @@ class Attention(nn.Module):
         if self.cfg.attention_dir == "causal":
             # If causal attention, we mask it to only attend backwards. If bidirectional, we don't mask.
             attn_scores = self.apply_causal_mask(
-                attn_scores, kv_cache_pos_offset, attention_mask
+                attn_scores, kv_cache_pos_offset, left_attention_mask
             )  # [batch, head_index, query_pos, key_pos]
         if additive_attention_mask is not None:
             attn_scores += additive_attention_mask
@@ -599,7 +599,7 @@ class Attention(nn.Module):
             torch.Tensor, "batch head_index pos pos_plus_past_kv_pos_offset"
         ],
         past_kv_pos_offset: int = 0,
-        attention_mask: Optional[Bool[torch.Tensor, "batch pos"]] = None,
+        left_attention_mask: Optional[Int[torch.Tensor, "batch pos"]] = None,
     ):
         # The query context length is the number of positions we take queries from - if not using a past_kv_cache this is just the context length (for the current prompt), but if we're caching it's just a single token.
         query_ctx_length = attn_scores.size(-2)
@@ -611,7 +611,7 @@ class Attention(nn.Module):
             query_ctx_length + past_kv_pos_offset == key_ctx_length
         ), f"query_ctx_length {query_ctx_length} + past_kv_pos_offset {past_kv_pos_offset} != key_ctx_length {key_ctx_length} - you likely have a bug."
 
-        if attention_mask is None:
+        if left_attention_mask is None:
             masked_attn_scores = torch.where(
                 self.mask[
                     past_kv_pos_offset : past_kv_pos_offset + query_ctx_length,
@@ -621,19 +621,19 @@ class Attention(nn.Module):
                 self.IGNORE,
             )
 
-        # attention_mask is not None when left padding is used
+        # left_attention_mask is not None when left padding is used
         else:
             batched_causal_mask = einops.repeat(
                 self.mask,
                 "n_ctx1 n_ctx2 -> batch n_ctx1 n_ctx2",
-                batch=attention_mask.size(0),
+                batch=left_attention_mask.size(0),
             )
             kv_attention_mask = einsum(
                 "batch pos1, batch pos2 -> batch pos1 pos2",
-                attention_mask,
-                attention_mask,
+                left_attention_mask,
+                left_attention_mask,
             )
-            pos = attention_mask.size(1)
+            pos = left_attention_mask.size(1)
             batched_causal_mask = batched_causal_mask.clone()
             batched_causal_mask[:, :pos, :pos] *= kv_attention_mask
 
@@ -931,7 +931,7 @@ class TransformerBlock(nn.Module):
             Float[torch.Tensor, "batch pos d_model"]
         ] = None,
         past_kv_cache_entry: Optional[HookedTransformerKeyValueCacheEntry] = None,
-        attention_mask: Optional[Bool[torch.Tensor, "batch pos"]] = None,
+        left_attention_mask: Optional[Int[torch.Tensor, "batch pos"]] = None,
     ) -> Float[torch.Tensor, "batch pos d_model"]:
         """A single Transformer block.
 
@@ -976,7 +976,7 @@ class TransformerBlock(nn.Module):
                 + (0.0 if shortformer_pos_embed is None else shortformer_pos_embed),
                 value_input=self.ln1(value_input),
                 past_kv_cache_entry=past_kv_cache_entry,
-                attention_mask=attention_mask,
+                left_attention_mask=left_attention_mask,
             )
         )  # [batch, pos, d_model]
         if not self.cfg.attn_only and not self.cfg.parallel_attn_mlp:
