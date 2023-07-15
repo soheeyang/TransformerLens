@@ -77,32 +77,45 @@ class PosEmbed(nn.Module):
         self,
         tokens: Int[torch.Tensor, "batch pos"],
         past_kv_pos_offset: int = 0,
-        first_attended_token_positions: Optional[Int[torch.Tensor, "batch"]] = None,
+        first_attended_token_positions: Optional[Int[torch.Tensor, "batch pos"]] = None,
     ) -> Float[torch.Tensor, "batch pos d_model"]:
-        """Tokens have shape [batch, pos]
-        past_kv_pos_offset is the length of tokens in the past_kv_cache (if used, defaults to zero if unused)
-        Output shape [pos, d_model] - will be broadcast along batch dim"""
+        """
+        Forward pass for positional embeddings.
 
+        Args:
+            tokens (Int[torch.Tensor, "batch pos"]): Input tokens.
+            past_kv_pos_offset (int, optional): The length of tokens in the past_kv_cache. Defaults to 0.
+            first_attended_token_positions (Int[torch.Tensor], optional): Position of the first attended token 
+                in each sequence when left padding is used. None if right padding is used. Defaults to None.
+
+        Returns:
+            Float[torch.Tensor, "batch pos d_model"]: Absolute positional embeddings.
+        """
         tokens_length = tokens.size(-1)
+        batch_size = tokens.size(0)
 
         if first_attended_token_positions is None:
+            # Right padding case
             pos_embed = self.W_pos[
                 past_kv_pos_offset : tokens_length + past_kv_pos_offset, :
             ]  # [pos, d_model]
             batch_pos_embed = einops.repeat(
                 pos_embed, "pos d_model -> batch pos d_model", batch=tokens.size(0)
             )
-
+        
         else:
-            slice_indices = first_attended_token_positions[:, None] + torch.tensor(
-                [[past_kv_pos_offset, tokens_length + past_kv_pos_offset]],
-                device=first_attended_token_positions.device,
-            )  # [batch, 2]
-            slice_tuples = [tuple(slice.tolist()) for slice in slice_indices]
+            # Left padding case
+            # shift the position ids so that the id at the the first attended token position becomes zero.
+            position_ids = torch.arange(tokens_length)[:, None].repeat(1, batch_size)  # [tokens_length, batch]
+            position_ids = position_ids - first_attended_token_positions[None]
+            position_ids[position_ids < 0] = 0  # Set the position ids of pad tokens to zero. They will be masked anyway.
 
-            batch_pos_embed = torch.stack(
-                [Slice(slice).apply(self.W_pos, dim=0) for slice in slice_tuples]
-            )  # [batch, pos, d_model]
+            target_position_ids = position_ids[
+                past_kv_pos_offset : tokens_length + past_kv_pos_offset, :
+            ]  # [pos, batch]
+
+            # Retrieve the positional embeddings for each position ID
+            batch_pos_embed = self.W_pos[target_position_ids].transpose(0, 1)  # [batch, pos, d_model]
 
         return batch_pos_embed.clone()
 
