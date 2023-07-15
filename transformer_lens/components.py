@@ -77,7 +77,7 @@ class PosEmbed(nn.Module):
         self,
         tokens: Int[torch.Tensor, "batch pos"],
         past_kv_pos_offset: int = 0,
-        first_attended_token_positions: Optional[Int[torch.Tensor, "batch pos"]] = None,
+        left_attention_mask: Int[torch.Tensor, "batch pos"] = None,
     ) -> Float[torch.Tensor, "batch pos d_model"]:
         """
         Forward pass for positional embeddings.
@@ -85,16 +85,13 @@ class PosEmbed(nn.Module):
         Args:
             tokens (Int[torch.Tensor, "batch pos"]): Input tokens.
             past_kv_pos_offset (int, optional): The length of tokens in the past_kv_cache. Defaults to 0.
-            first_attended_token_positions (Int[torch.Tensor], optional): Position of the first attended token 
-                in each sequence when left padding is used. None if right padding is used. Defaults to None.
 
         Returns:
-            Float[torch.Tensor, "batch pos d_model"]: Absolute positional embeddings.
+            Float[torch.Tensor, "batch pos d_model"]: Absolute position embeddings.
         """
         tokens_length = tokens.size(-1)
-        batch_size = tokens.size(0)
 
-        if first_attended_token_positions is None:
+        if left_attention_mask is None:
             # Right padding case
             pos_embed = self.W_pos[
                 past_kv_pos_offset : tokens_length + past_kv_pos_offset, :
@@ -105,17 +102,30 @@ class PosEmbed(nn.Module):
         
         else:
             # Left padding case
-            # shift the position ids so that the id at the the first attended token position becomes zero.
-            position_ids = torch.arange(tokens_length)[:, None].repeat(1, batch_size)  # [tokens_length, batch]
-            position_ids = position_ids - first_attended_token_positions[None]
-            position_ids[position_ids < 0] = 0  # Set the position ids of pad tokens to zero. They will be masked anyway.
+            position_ids = einops.repeat(
+                torch.arange(tokens_length, device=tokens.device),
+                "tokens_length -> tokens_length batch", batch=tokens.size(0)
+            )  # [tokens_length, batch]
 
-            target_position_ids = position_ids[
+            # shift the position ids so that the id at the the first attended token position becomes zero.
+            # The position ids of the prepending pad tokens are shifted to negative values.
+            first_attended_token_positions = (1 - left_attention_mask).sum(dim=-1)
+            shifted_position_ids = position_ids - first_attended_token_positions[None]  # [tokens_length, batch]
+
+            # Set the position ids of all prepending pad tokens to an arbitrary number (zero here)
+            # just to avoid indexing errors.
+            position_ids = shifted_position_ids.masked_fill(shifted_position_ids < 0, 0)
+            offsetted_position_ids = position_ids[
                 past_kv_pos_offset : tokens_length + past_kv_pos_offset, :
             ]  # [pos, batch]
-
-            # Retrieve the positional embeddings for each position ID
-            batch_pos_embed = self.W_pos[target_position_ids].transpose(0, 1)  # [batch, pos, d_model]
+            pos_embed = self.W_pos[offsetted_position_ids]  # [pos, batch, d_model]
+            
+            # Set the position embeddings to 0 for pad tokens
+            padding_mask = (1 - left_attention_mask).bool().T  # [tokens_length, batch]
+            offsetted_padding_mask = padding_mask[
+                past_kv_pos_offset : tokens_length + past_kv_pos_offset, :
+            ]  # [pos, batch]
+            batch_pos_embed = torch.where(offsetted_padding_mask.unsqueeze(-1), 0, pos_embed).transpose(0, 1)
 
         return batch_pos_embed.clone()
 
@@ -634,22 +644,26 @@ class Attention(nn.Module):
                 self.IGNORE,
             )
 
-        # left_attention_mask is not None when left padding is used
+        # If using left padding, create a batched causal mask and apply it together with the left attention mask.
         else:
+            # Create a batched version of the causal mask
             batched_causal_mask = einops.repeat(
                 self.mask,
                 "n_ctx1 n_ctx2 -> batch n_ctx1 n_ctx2",
                 batch=left_attention_mask.size(0),
             )
+            # Create a mask for the key/value positions using the left attention mask
             kv_attention_mask = einsum(
                 "batch pos1, batch pos2 -> batch pos1 pos2",
                 left_attention_mask,
                 left_attention_mask,
             )
+            # Update the batched causal mask with the kv_attention_mask
             pos = left_attention_mask.size(1)
             batched_causal_mask = batched_causal_mask.clone()
             batched_causal_mask[:, :pos, :pos] *= kv_attention_mask
 
+            # Create the final mask and apply it to the attention scores.
             final_mask = batched_causal_mask.unsqueeze(1)  # [batch, 1, n_ctx, n_ctx]
 
             masked_attn_scores = torch.where(
@@ -663,6 +677,7 @@ class Attention(nn.Module):
                 self.IGNORE,
             )
 
+        # Return the masked attention scores
         return masked_attn_scores
 
     def rotary_rotate_qk(
