@@ -15,7 +15,7 @@ from transformer_lens.FactoredMatrix import FactoredMatrix
 from transformer_lens.hook_points import HookPoint
 from transformer_lens.HookedTransformerConfig import HookedTransformerConfig
 from transformer_lens.past_key_value_caching import HookedTransformerKeyValueCacheEntry
-from transformer_lens.utils import Slice, gelu_fast, gelu_new, solu
+from transformer_lens.utils import Slice, gelu_fast, gelu_new, solu, get_causal_mask_for_left_padding
 
 
 # Embed & Unembed
@@ -122,7 +122,7 @@ class PosEmbed(nn.Module):
             pos_embed = self.W_pos[offsetted_position_ids]  # [pos, batch, d_model]
             
             # Set the position embeddings to 0 for pad tokens
-            padding_mask = ~left_attention_mask.bool()  # [tokens_length, batch]
+            padding_mask = ~left_attention_mask.T.bool()  # [tokens_length, batch]
             offsetted_padding_mask = padding_mask[
                 past_kv_pos_offset : tokens_length + past_kv_pos_offset, :
             ].unsqueeze(-1)  # [pos, batch, 1]
@@ -616,7 +616,7 @@ class Attention(nn.Module):
                 + self.b_O
             )  # [batch, pos, d_model]
         return out
-
+    
     def apply_causal_mask(
         self,
         attn_scores: Float[
@@ -634,46 +634,24 @@ class Attention(nn.Module):
         assert (
             query_ctx_length + past_kv_pos_offset == key_ctx_length
         ), f"query_ctx_length {query_ctx_length} + past_kv_pos_offset {past_kv_pos_offset} != key_ctx_length {key_ctx_length} - you likely have a bug."
-
+        
         if left_attention_mask is None:
-            masked_attn_scores = torch.where(
-                self.mask[
-                    past_kv_pos_offset : past_kv_pos_offset + query_ctx_length,
-                    :key_ctx_length,
-                ],
-                attn_scores,
-                self.IGNORE,
-            )
-
-        # If using left padding, create a batched causal mask and apply it together with the left attention mask.
+            # Right padding case
+            # Apply only a causal mask to the attention scores
+            final_mask = self.mask.unsqueeze()
         else:
-            causal_mask = self.mask[:past_kv_pos_offset + query_ctx_length, :key_ctx_length]
-            # Create a batched version of the causal mask
-            batched_causal_mask = einops.repeat(
-                causal_mask,
-                "q k -> batch q k",
-                batch=left_attention_mask.size(0),
-            )
-            # Create a mask for the key/value positions using the left attention mask
-            kv_attention_mask = einsum(
-                "batch pos1, batch pos2 -> batch pos1 pos2",
-                left_attention_mask,
-                left_attention_mask,
-            )[:, :past_kv_pos_offset + query_ctx_length, :key_ctx_length]  # [batch, q, k]
+            # Left padding case
+            # Apply a causal mask and a left attention mask to the attention scores
+            final_mask = get_causal_mask_for_left_padding(left_attention_mask)
+            final_mask = final_mask.unsqueeze(1)  # [batch, 1, pos, pos]
 
-            # Create the final mask and apply it to the attention scores.
-            final_mask = (batched_causal_mask * kv_attention_mask).unsqueeze(1)  # [batch, 1, q, k]
-
-            masked_attn_scores = torch.where(
-                final_mask[
-                    :,
-                    :,
-                    past_kv_pos_offset : past_kv_pos_offset + query_ctx_length,
-                    :key_ctx_length,
-                ].bool(),
-                attn_scores,
-                self.IGNORE,
-            )
+        masked_attn_scores = torch.where(
+            final_mask[
+                :, :, past_kv_pos_offset : past_kv_pos_offset + query_ctx_length, :key_ctx_length,
+            ],
+            attn_scores,
+            self.IGNORE,
+        )
 
         # Return the masked attention scores
         return masked_attn_scores

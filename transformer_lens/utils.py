@@ -828,3 +828,19 @@ def get_attention_mask(
             attetnion_mask[torch.arange(attetnion_mask.shape[0]), pad_bos_positions] = True
 
     return attetnion_mask.int()
+
+def get_causal_mask_for_left_padding(
+        left_attention_mask: Int[torch.Tensor, "batch pos"],
+    ) -> Int[torch.Tensor, "batch pos pos"]:
+
+    mask = einops.repeat(torch.zeros_like(left_attention_mask),
+                         'b pos1 -> b pos1 pos2',
+                         pos2=left_attention_mask.shape[1]).clone()
+    num_attended_tokens_list = (left_attention_mask).sum(-1).tolist()
+
+    for i, num_attended_tokens in enumerate(num_attended_tokens_list):
+        mask[i, -num_attended_tokens:, -num_attended_tokens:] = torch.tril(
+            torch.ones((num_attended_tokens, num_attended_tokens)).bool()
+        )
+        
+    return mask
