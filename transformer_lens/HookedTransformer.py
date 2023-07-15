@@ -291,6 +291,19 @@ class HookedTransformer(HookedRootModule):
         else:
             left_attention_mask = None
             first_attended_token_positions = None
+            
+        if tokenizer.padding_side == "left":
+            left_attention_mask = self.get_left_attention_mask(tokens)
+            
+            # Compute the position of the first attended token in each sequence.
+            # This is used for adjusting the positional embeddings later.
+            first_attended_token_positions = (1 - attention_mask).sum(dim=-1)
+        else:
+            # If the padding side is right, we don't need to compute the attention mask or 
+            # the first attended token positions, so we set these to None.
+            # We separate this case from left padding for computational efficiency.
+            left_attention_mask = None
+            first_attended_token_positions = None
 
         # If we're doing caching, then we reuse keys and values from previous runs, as that's the only
         # way that past activations will affect the final logits. The cache contains those so we don't
@@ -631,22 +644,35 @@ class HookedTransformer(HookedRootModule):
 
     def get_left_attention_mask(
         self,
-        tokens: Float[torch.Tensor, "batch pos"],
-    ) -> ibool[torch.Tensor, "batch pos"]:
-        attention_mask = tokens.ne(self.tokenizer.pad_token_id)
+        tokens: Int[torch.Tensor, "batch pos"]
+    ) -> Int[torch.Tensor, "batch pos"]:
+        """
+        This method calculates an attention mask for a given sequence of tokens when left padding is used. The attention
+        mask is a binary tensor where each element is 1 if the corresponding token is not a pad token and 0 otherwise. In
+        the special case where the BOS token is the same as the pad token, this method infers if a BOS token is prepended
+        and then ensures that the prepended BOS token in each sequence gets a 1 in the attention mask, so that it is not
+        treated as a pad token.
+        """
+        # Initialize the attention mask to be 1 wherever the token is not a pad token
+        left_attention_mask = tokens.ne(self.tokenizer.pad_token_id)
 
+        # Handle the special case where the BOS token is the same as the pad token
         if self.tokenizer.bos_token_id == self.tokenizer.pad_token_id:
-            is_pad_token = 1 - attention_mask.int()
-            bos_is_prepended = is_pad_token.sum(dim=-1).eq(0).any().item()
+            is_pad_token = 1 - left_attention_mask.int()
+            
+            # If all sequences have at least one pad token (at the start), assume that the BOS token is prepended.
+            # Note: This assumption does not hold when the batch is right-padded (thus should not be used in that case) 
+            # or when the batch is padded up to a length that is greater than the length of the longest sequence in the batch.
             bos_is_prepended = not is_pad_token.sum(dim=-1).eq(0).any().item()
 
             if bos_is_prepended:
+                # Find the position of the pad token used as the BOS token and thus should get attended
                 pad_bos_positions = is_pad_token.cumsum(dim=-1).argmax(dim=-1)
-                attention_mask[
-                    torch.arange(attention_mask.shape[0]), pad_bos_positions
-                ] = True
+                
+                # Set the corresponding position in the attention mask to 1, to ensure that the BOS token is not treated as a pad token
+                left_attention_mask[torch.arange(left_attention_mask.shape[0]), pad_bos_positions] = True
 
-        return attention_mask.int()
+        return left_attention_mask.int()
 
     def get_token_position(
         self,
