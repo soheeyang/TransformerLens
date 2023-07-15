@@ -638,6 +638,7 @@ class HookedTransformer(HookedRootModule):
         if self.tokenizer.bos_token_id == self.tokenizer.pad_token_id:
             is_pad_token = 1 - attention_mask.int()
             bos_is_prepended = is_pad_token.sum(dim=-1).eq(0).any().item()
+            bos_is_prepended = not is_pad_token.sum(dim=-1).eq(0).any().item()
 
             if bos_is_prepended:
                 pad_bos_positions = is_pad_token.cumsum(dim=-1).argmax(dim=-1)
