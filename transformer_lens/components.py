@@ -108,9 +108,8 @@ class PosEmbed(nn.Module):
             )  # [tokens_length, batch]
 
             # shift the position ids so that the id at the the first attended token position becomes zero.
-            # The position ids of the prepending pad tokens are shifted to negative values.
-            first_attended_token_positions = (1 - left_attention_mask).sum(dim=-1)
-            shifted_position_ids = position_ids - first_attended_token_positions[None]  # [tokens_length, batch]
+            # The position ids of the prepending pad tokens are shifted to -1.
+            shifted_position_ids = left_attention_mask.cumsum(dim=-1) - 1  # [batch, tokens_length]
 
             # Set the position ids of all prepending pad tokens to an arbitrary number (zero here)
             # just to avoid indexing errors.
