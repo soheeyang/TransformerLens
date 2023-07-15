@@ -279,7 +279,6 @@ class TestAttentionMask:
             for i, num in enumerate(intended_num_attended_tokens.tolist()):
                 assert (attention_mask[i, -num:] == 1).all()
     
-    # tests
     def test_get_causal_mask_for_left_padding(self, model):
         model.tokenizer.padding_side = "left"
 

@@ -14,11 +14,25 @@ class TestPosEmbedWithLeftPadding:
         'I am happy.',
     ]
     
-    def get_logits(self, model, prompts, run_with_cache):
-        if run_with_cache:
-            return model.run_with_cache(prompts)[0]
-        else:
-            return model(prompts)
+    # helpers
+    def check_outputs_identity(self, i, single_outputs, left_outputs, right_outputs,
+                       left_token_start, left_token_end, right_token_start, right_token_end):
+        assert torch.allclose(
+            left_outputs[i, left_token_start:left_token_end, :],
+            right_outputs[i, right_token_start:right_token_end, :],
+        )
+        
+        assert torch.allclose(
+            left_outputs[i, left_token_start:left_token_end, :],
+            single_outputs[0],
+            atol=1e-4,
+        )
+        
+        assert torch.allclose(
+            right_outputs[i, right_token_start:right_token_end, :],
+            single_outputs[0],
+            atol=1e-4,
+        )
 
     # fixtures
     @pytest.fixture(scope="class", params=["gpt2-small", "facebook/opt-125m"])
@@ -60,22 +74,21 @@ class TestPosEmbedWithLeftPadding:
         # padded positions should have zero pos_embed
         assert output_pos_embed[~left_attention_mask.bool()].sum() == 0
         
-    @pytest.mark.parametrize("run_with_cache", [True, False])
-    def test_left_padding(self, model, run_with_cache):
+    def test_left_padding_by_comparing_outputs(self, model):
         prompts = self.prompts
         
         num_str_tokens_list = [len(t) for t in model.to_str_tokens(prompts)]
         
         # left padding output
         model.tokenizer.padding_side = "left"
-        left_logits = self.get_logits(model, prompts, run_with_cache=run_with_cache)
+        left_logits, left_cache = model.run_with_cache(prompts)
         left_last_logits = left_logits[:, -1, :]
         left_first_token_positions = left_logits.shape[1] - torch.tensor(num_str_tokens_list, device=left_logits.device)
         left_first_logits = left_logits[torch.arange(len(prompts)), left_first_token_positions, :].squeeze(1)
         
         # right padding output
         model.tokenizer.padding_side = "right"
-        right_logits = self.get_logits(model, prompts, run_with_cache=run_with_cache)
+        right_logits, right_cache = model.run_with_cache(prompts)
         right_last_token_positions = torch.tensor(num_str_tokens_list, device=right_logits.device) - 1
         right_last_logits = right_logits[torch.arange(len(prompts)), right_last_token_positions, :].squeeze(1)        
         right_first_logits = right_logits[:, 0, :]
@@ -91,23 +104,18 @@ class TestPosEmbedWithLeftPadding:
         for i, (prompt, left_token_start, right_token_end) in enumerate(zip(
             prompts, left_first_token_positions.tolist(), (right_last_token_positions + 1).tolist()
         )):
-            single_logits = self.get_logits(model, prompt, run_with_cache=run_with_cache)[0]
+            single_logits, single_cache = model.run_with_cache(prompt)
             
-            assert right_token_end - right_token_start == left_token_end - left_token_start == single_logits.shape[0]
+            assert right_token_end - right_token_start == left_token_end - left_token_start == single_logits.shape[1]
 
-            assert torch.allclose(
-                left_logits[i, left_token_start:left_token_end, :],
-                right_logits[i, right_token_start:right_token_end, :],
+            self.check_outputs_identity(
+                i, single_logits, left_logits, right_logits,
+                left_token_start, left_token_end, right_token_start, right_token_end
             )
             
-            assert torch.allclose(
-                left_logits[i, left_token_start:left_token_end, :],
-                single_logits,
-                atol=1e-4,
-            )
-            
-            assert torch.allclose(
-                right_logits[i, right_token_start:right_token_end, :],
-                single_logits,
-                atol=1e-4,
-            )
+            # check cache
+            for name in ['k6a', 'pre2', 'embed', 'k6', 'scale4ln1', 'pre5']:
+                self.check_outputs_identity(
+                    i, single_cache[name], left_cache[name], right_cache[name],
+                    left_token_start, left_token_end, right_token_start, right_token_end
+                )
