@@ -638,7 +638,7 @@ class Attention(nn.Module):
         if left_attention_mask is None:
             # Right padding case
             # Apply only a causal mask to the attention scores
-            final_mask = self.mask.unsqueeze()
+            final_mask = self.mask[None, None]  # [1, 1, pos, pos]
         else:
             # Left padding case
             # Apply a causal mask and a left attention mask to the attention scores
