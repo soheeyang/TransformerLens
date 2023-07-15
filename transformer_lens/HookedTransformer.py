@@ -559,7 +559,7 @@ class HookedTransformer(HookedRootModule):
             list,
         ],
         prepend_bos: bool = True,
-    ) -> List[str]:
+    ) -> Union[List[str], List[List[str]]]:
         """Method to map text, a list of text or tokens to a list of tokens as strings
 
         Gotcha: prepend_bos prepends a beginning of string token. This is a recommended default when inputting a prompt
