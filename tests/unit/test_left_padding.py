@@ -4,6 +4,7 @@ import torch
 from transformer_lens import HookedTransformer, utils
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
 class TestLeftPadding:
     prompts = [
         "Hello world!",

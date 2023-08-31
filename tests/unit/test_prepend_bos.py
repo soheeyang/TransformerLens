@@ -1,8 +1,11 @@
 import pytest
+import torch
+from transformers import AutoTokenizer
 
 from transformer_lens import HookedTransformer
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
 class TestPrependBos:
     prompt = "Hello world!"
 
