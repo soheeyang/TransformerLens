@@ -536,7 +536,7 @@ class HookedTransformer(HookedRootModule):
     def set_tokenizer(
         self,
         tokenizer,
-        default_padding_side="right",
+        default_padding_side=None,
     ):
         """
         Sets the tokenizer to use for this model.
@@ -548,7 +548,10 @@ class HookedTransformer(HookedRootModule):
         ), f"{type(tokenizer)} is not a supported tokenizer, please use PreTrainedTokenizer or PreTrainedTokenizerFast"
 
         self.tokenizer_dict = tokenization_utils.get_tokenizer_dict(tokenizer)
-        self.default_padding_side = default_padding_side
+        if default_padding_side is not None:
+            self.default_padding_side = default_padding_side
+        else:
+            self.default_padding_side = tokenizer.padding_side
 
         # Infer vocab size from tokenizer
         if self.cfg.d_vocab == -1:

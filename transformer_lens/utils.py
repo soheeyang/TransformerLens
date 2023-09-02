@@ -957,7 +957,7 @@ class LocallyOverridenDefaults:
 
     WARNING: This context manager must be used for any function/method that directly accesses
     default values which may be overridden by the user using the function/method's arguments,
-    e.g., `model.cfg.default_prepend_bos` and `model.tokenizer.padding_side` which can be
+    e.g., `model.cfg.default_prepend_bos` and `model.default_padding_side` which can be
     overriden by `prepend_bos` and `padding_side` arguments, respectively, in the `to_tokens`.
     """
 
