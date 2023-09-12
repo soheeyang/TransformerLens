@@ -846,8 +846,10 @@ def get_pretrained_model_config(
     if fold_ln:
         if cfg_dict["normalization_type"] in ["LN", "LNPre"]:
             cfg_dict["normalization_type"] = "LNPre"
+        elif cfg_dict["normalization_type"] in ["RMS", "RMSPre"]:
+            cfg_dict["normalization_type"] = "RMSPre"
         else:
-            logging.warning("Cannot fold in layer norm, normalization_type is not LN.")
+            logging.warning("Cannot fold in layer norm, normalization_type is not LN/RMS.")
 
     if checkpoint_index is not None or checkpoint_value is not None:
         checkpoint_labels, checkpoint_label_type = get_checkpoint_labels(

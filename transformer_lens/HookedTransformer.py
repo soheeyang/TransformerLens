@@ -1135,9 +1135,9 @@ class HookedTransformer(HookedRootModule):
 
         state_dict = self.fill_missing_keys(state_dict)
         if fold_ln:
-            if self.cfg.normalization_type not in ["LN", "LNPre"]:
+            if self.cfg.normalization_type not in ["LN", "LNPre", "RMS", "RMSPre"]:
                 logging.warning(
-                    "You are not using LayerNorm, so the layer norm weights can't be folded! Skipping"
+                    "You are not using LayerNorm/RMS, so the layer norm weights can't be folded! Skipping"
                 )
             else:
                 # Note - you can run fold_layer_norm while normalization_type is LN, but this is not advised! It mostly
@@ -1179,18 +1179,20 @@ class HookedTransformer(HookedRootModule):
             # Each weight matrix right multiplies.
             # To fold in the bias, we use the W_ matrix to map it to the hidden space of the layer,
             # so we need to sum along axis -2, which is the residual stream space axis.
-            state_dict[f"blocks.{l}.attn.b_Q"] = state_dict[f"blocks.{l}.attn.b_Q"] + (
-                state_dict[f"blocks.{l}.attn.W_Q"]
-                * state_dict[f"blocks.{l}.ln1.b"][None, :, None]
-            ).sum(-2)
-            state_dict[f"blocks.{l}.attn.b_K"] = state_dict[f"blocks.{l}.attn.b_K"] + (
-                state_dict[f"blocks.{l}.attn.W_K"]
-                * state_dict[f"blocks.{l}.ln1.b"][None, :, None]
-            ).sum(-2)
-            state_dict[f"blocks.{l}.attn.b_V"] = state_dict[f"blocks.{l}.attn.b_V"] + (
-                state_dict[f"blocks.{l}.attn.W_V"]
-                * state_dict[f"blocks.{l}.ln1.b"][None, :, None]
-            ).sum(-2)
+
+            if self.cfg.normalization_type in ["LN", "LNPre"]:
+                state_dict[f"blocks.{l}.attn.b_Q"] = state_dict[f"blocks.{l}.attn.b_Q"] + (
+                    state_dict[f"blocks.{l}.attn.W_Q"]
+                    * state_dict[f"blocks.{l}.ln1.b"][None, :, None]
+                ).sum(-2)
+                state_dict[f"blocks.{l}.attn.b_K"] = state_dict[f"blocks.{l}.attn.b_K"] + (
+                    state_dict[f"blocks.{l}.attn.W_K"]
+                    * state_dict[f"blocks.{l}.ln1.b"][None, :, None]
+                ).sum(-2)
+                state_dict[f"blocks.{l}.attn.b_V"] = state_dict[f"blocks.{l}.attn.b_V"] + (
+                    state_dict[f"blocks.{l}.attn.W_V"]
+                    * state_dict[f"blocks.{l}.ln1.b"][None, :, None]
+                ).sum(-2)
 
             state_dict[f"blocks.{l}.attn.W_Q"] = (
                 state_dict[f"blocks.{l}.attn.W_Q"]
@@ -1210,50 +1212,68 @@ class HookedTransformer(HookedRootModule):
             # of the matrix doesn't matter and can be set to zero.
             # Equivalently, the output of LayerNormPre is orthogonal to the vector of all 1s (because
             # dotting with that gets the sum), so we can remove the component of the matrix parallel to this.
-            state_dict[f"blocks.{l}.attn.W_Q"] -= einops.reduce(
-                state_dict[f"blocks.{l}.attn.W_Q"],
-                "head_index d_model d_head -> head_index 1 d_head",
-                "mean",
-            )
-            state_dict[f"blocks.{l}.attn.W_K"] -= einops.reduce(
-                state_dict[f"blocks.{l}.attn.W_K"],
-                "head_index d_model d_head -> head_index 1 d_head",
-                "mean",
-            )
-            state_dict[f"blocks.{l}.attn.W_V"] -= einops.reduce(
-                state_dict[f"blocks.{l}.attn.W_V"],
-                "head_index d_model d_head -> head_index 1 d_head",
-                "mean",
-            )
+            if self.cfg.normalization_type in ["LN", "LNPre"]:
+                state_dict[f"blocks.{l}.attn.W_Q"] -= einops.reduce(
+                    state_dict[f"blocks.{l}.attn.W_Q"],
+                    "head_index d_model d_head -> head_index 1 d_head",
+                    "mean",
+                )
+                state_dict[f"blocks.{l}.attn.W_K"] -= einops.reduce(
+                    state_dict[f"blocks.{l}.attn.W_K"],
+                    "head_index d_model d_head -> head_index 1 d_head",
+                    "mean",
+                )
+                state_dict[f"blocks.{l}.attn.W_V"] -= einops.reduce(
+                    state_dict[f"blocks.{l}.attn.W_V"],
+                    "head_index d_model d_head -> head_index 1 d_head",
+                    "mean",
+                )
 
-            del (
-                state_dict[f"blocks.{l}.ln1.w"],
-                state_dict[f"blocks.{l}.ln1.b"],
-            )
+            del state_dict[f"blocks.{l}.ln1.w"]
+            if self.cfg.normalization_type in ["LN", "LNPre"]:
+                del state_dict[f"blocks.{l}.ln1.b"]
 
             # Fold ln2 into MLP
             if not self.cfg.attn_only:
-                state_dict[f"blocks.{l}.mlp.b_in"] = state_dict[
-                    f"blocks.{l}.mlp.b_in"
-                ] + (
-                    state_dict[f"blocks.{l}.mlp.W_in"]
-                    * state_dict[f"blocks.{l}.ln2.b"][:, None]
-                ).sum(
-                    -2
-                )
+                if self.cfg.normalization_type in ["LN", "LNPre"]:
+                    state_dict[f"blocks.{l}.mlp.b_in"] = state_dict[
+                        f"blocks.{l}.mlp.b_in"
+                    ] + (
+                        state_dict[f"blocks.{l}.mlp.W_in"]
+                        * state_dict[f"blocks.{l}.ln2.b"][:, None]
+                    ).sum(
+                        -2
+                    )
+                
                 state_dict[f"blocks.{l}.mlp.W_in"] = (
                     state_dict[f"blocks.{l}.mlp.W_in"]
                     * state_dict[f"blocks.{l}.ln2.w"][:, None]
                 )
+                if self.cfg.normalization_type in ["RMS", "RMSPre"]:
+                    # Center the weights that read in from the LayerNormPre
+                    state_dict[f"blocks.{l}.mlp.W_in"] -= einops.reduce(
+                        state_dict[f"blocks.{l}.mlp.W_in"],
+                        "d_model d_mlp -> 1 d_mlp",
+                        "mean",
+                    )
 
-                # Center the weights that read in from the LayerNormPre
-                state_dict[f"blocks.{l}.mlp.W_in"] -= einops.reduce(
-                    state_dict[f"blocks.{l}.mlp.W_in"],
-                    "d_model d_mlp -> 1 d_mlp",
-                    "mean",
-                )
+                if self.cfg.gated_mlp:
+                    state_dict[f"blocks.{l}.mlp.W_gate"] = (
+                        state_dict[f"blocks.{l}.mlp.W_gate"]
+                        * state_dict[f"blocks.{l}.ln2.w"][:, None]
+                    )
+                    if self.cfg.normalization_type in ["LN", "LNPre"]:
+                        # Center the weights that read in from the LayerNormPre
+                        state_dict[f"blocks.{l}.mlp.W_gate"] -= einops.reduce(
+                            state_dict[f"blocks.{l}.mlp.W_gate"],
+                            "d_model d_mlp -> 1 d_mlp",
+                            "mean",
+                        )
 
-                del state_dict[f"blocks.{l}.ln2.w"], state_dict[f"blocks.{l}.ln2.b"]
+
+                del state_dict[f"blocks.{l}.ln2.w"]
+                if self.cfg.normalization_type in ["LN", "LNPre"]:
+                    del state_dict[f"blocks.{l}.ln2.b"]
 
                 if self.cfg.act_fn.startswith("solu"):
                     # Fold ln3 into activation
@@ -1276,10 +1296,10 @@ class HookedTransformer(HookedRootModule):
                         "d_mlp d_model -> 1 d_model",
                         "mean",
                     )
-                    del (
-                        state_dict[f"blocks.{l}.mlp.ln.w"],
-                        state_dict[f"blocks.{l}.mlp.ln.b"],
-                    )
+                    del state_dict[f"blocks.{l}.mlp.ln.w"]
+                    if self.cfg.normalization_type in ["LN", "LNPre"]:
+                        del state_dict[f"blocks.{l}.mlp.ln.b"]
+        
         # Fold ln_final into Unembed
         if not self.cfg.final_rms:
             # Dumb bug from my old SoLU training code, some models have RMSNorm instead of LayerNorm pre unembed.
@@ -1488,12 +1508,27 @@ class HookedTransformer(HookedRootModule):
             # If we're folding the LN into the weights, we need to replace all the layernorm layers with LayerNormPres,
             # which do not have learnable parameters. This is somewhat hacky, but it's the easiest way to do it.
             self.cfg.normalization_type = "LNPre"
-            self.ln_final = LayerNormPre(self.cfg)
+            if self.cfg.final_rms:
+                self.ln_final = RMSNormPre(self.cfg)
+            else:
+                self.ln_final = LayerNormPre(self.cfg)
             for layer in self.blocks:
                 layer.ln1 = LayerNormPre(self.cfg)
                 layer.ln2 = LayerNormPre(self.cfg)
                 if self.cfg.act_fn.endswith("_ln"):
-                    layer.mlp.ln = LayerNormPre(self.cfg)
+                    layer.mlp.ln = LyerNormPre(self.cfg)
+                    
+        if fold_ln and self.cfg.normalization_type == "RMS":
+            self.cfg.normalization_type = "RMSPre"
+            if self.cfg.final_rms:
+                self.ln_final = RMSNormPre(self.cfg)
+            else:
+                self.ln_final = LayerNormPre(self.cfg)
+            for layer in self.blocks:
+                layer.ln1 = RMSNormPre(self.cfg)
+                layer.ln2 = RMSNormPre(self.cfg)
+                if self.cfg.act_fn.endswith("_ln"):
+                    layer.mlp.ln = RMSNormPre(self.cfg)
 
         self.load_and_process_state_dict(
             state_dict,
