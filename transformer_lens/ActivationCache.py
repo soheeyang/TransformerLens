@@ -588,7 +588,7 @@ class ActivationCache:
 
         The layernorm scale is global across the entire residual stream for each layer, batch element and position, which is why we need to use the cached scale factors rather than just applying a new LayerNorm.
 
-        If the model does not use LayerNorm, it returns the residual stack unchanged.
+        If the model does not use LayerNorm/RMSNorm, it returns the residual stack unchanged.
 
         Args:
             residual_stack (torch.Tensor): A tensor, whose final dimension is
@@ -611,7 +611,7 @@ class ActivationCache:
             has_batch_dim (bool, optional): Whether residual_stack has a batch dimension.
                 Defaults to True.
         """
-        if self.model.cfg.normalization_type not in ["LN", "LNPre"]:
+        if self.model.cfg.normalization_type not in ["LN", "LNPre", "RMS", "RMSPre"]:
             # The model does not use LayerNorm, so we don't need to do anything.
             return residual_stack
         if not isinstance(pos_slice, Slice):
@@ -628,7 +628,8 @@ class ActivationCache:
             residual_stack = batch_slice.apply(residual_stack, dim=1)
 
         # Center the stack
-        residual_stack = residual_stack - residual_stack.mean(dim=-1, keepdim=True)
+        if self.model.cfg.normalization_type not in ["RMS", "RMSPre"]:
+            residual_stack = residual_stack - residual_stack.mean(dim=-1, keepdim=True)
 
         if layer == self.model.cfg.n_layers or layer is None:
             scale = self["ln_final.hook_scale"]
