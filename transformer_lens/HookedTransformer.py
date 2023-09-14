@@ -1180,7 +1180,7 @@ class HookedTransformer(HookedRootModule):
             # To fold in the bias, we use the W_ matrix to map it to the hidden space of the layer,
             # so we need to sum along axis -2, which is the residual stream space axis.
 
-            if self.cfg.normalization_type in ["LN", "LNPre"]:
+            if self.cfg.normalization_type not in ["RMS", "RMSPre"]:
                 state_dict[f"blocks.{l}.attn.b_Q"] = state_dict[f"blocks.{l}.attn.b_Q"] + (
                     state_dict[f"blocks.{l}.attn.W_Q"]
                     * state_dict[f"blocks.{l}.ln1.b"][None, :, None]
@@ -1212,7 +1212,7 @@ class HookedTransformer(HookedRootModule):
             # of the matrix doesn't matter and can be set to zero.
             # Equivalently, the output of LayerNormPre is orthogonal to the vector of all 1s (because
             # dotting with that gets the sum), so we can remove the component of the matrix parallel to this.
-            if self.cfg.normalization_type in ["LN", "LNPre"]:
+            if self.cfg.normalization_type not in ["RMS", "RMSPre"]:
                 state_dict[f"blocks.{l}.attn.W_Q"] -= einops.reduce(
                     state_dict[f"blocks.{l}.attn.W_Q"],
                     "head_index d_model d_head -> head_index 1 d_head",
@@ -1230,12 +1230,12 @@ class HookedTransformer(HookedRootModule):
                 )
 
             del state_dict[f"blocks.{l}.ln1.w"]
-            if self.cfg.normalization_type in ["LN", "LNPre"]:
+            if self.cfg.normalization_type not in ["RMS", "RMSPre"]:
                 del state_dict[f"blocks.{l}.ln1.b"]
 
             # Fold ln2 into MLP
             if not self.cfg.attn_only:
-                if self.cfg.normalization_type in ["LN", "LNPre"]:
+                if self.cfg.normalization_type not in ["RMS", "RMSPre"]:
                     state_dict[f"blocks.{l}.mlp.b_in"] = state_dict[
                         f"blocks.{l}.mlp.b_in"
                     ] + (
@@ -1249,7 +1249,7 @@ class HookedTransformer(HookedRootModule):
                     state_dict[f"blocks.{l}.mlp.W_in"]
                     * state_dict[f"blocks.{l}.ln2.w"][:, None]
                 )
-                if self.cfg.normalization_type in ["RMS", "RMSPre"]:
+                if self.cfg.normalization_type not in ["RMS", "RMSPre"]:
                     # Center the weights that read in from the LayerNormPre
                     state_dict[f"blocks.{l}.mlp.W_in"] -= einops.reduce(
                         state_dict[f"blocks.{l}.mlp.W_in"],
@@ -1262,7 +1262,7 @@ class HookedTransformer(HookedRootModule):
                         state_dict[f"blocks.{l}.mlp.W_gate"]
                         * state_dict[f"blocks.{l}.ln2.w"][:, None]
                     )
-                    if self.cfg.normalization_type in ["LN", "LNPre"]:
+                    if self.cfg.normalization_type not in ["RMS", "RMSPre"]:
                         # Center the weights that read in from the LayerNormPre
                         state_dict[f"blocks.{l}.mlp.W_gate"] -= einops.reduce(
                             state_dict[f"blocks.{l}.mlp.W_gate"],
@@ -1272,7 +1272,7 @@ class HookedTransformer(HookedRootModule):
 
 
                 del state_dict[f"blocks.{l}.ln2.w"]
-                if self.cfg.normalization_type in ["LN", "LNPre"]:
+                if self.cfg.normalization_type not in ["RMS", "RMSPre"]:
                     del state_dict[f"blocks.{l}.ln2.b"]
 
                 if self.cfg.act_fn.startswith("solu"):
