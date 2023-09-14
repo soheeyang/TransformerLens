@@ -1291,11 +1291,12 @@ class HookedTransformer(HookedRootModule):
                     )
 
                     # Center the weights that read in from the LayerNormPre
-                    state_dict[f"blocks.{l}.mlp.W_out"] -= einops.reduce(
-                        state_dict[f"blocks.{l}.mlp.W_out"],
-                        "d_mlp d_model -> 1 d_model",
-                        "mean",
-                    )
+                    if self.cfg.normalization_type not in ["RMS", "RMSPre"]:
+                        state_dict[f"blocks.{l}.mlp.W_out"] -= einops.reduce(
+                            state_dict[f"blocks.{l}.mlp.W_out"],
+                            "d_mlp d_model -> 1 d_model",
+                            "mean",
+                        )
                     del state_dict[f"blocks.{l}.mlp.ln.w"]
                     if self.cfg.normalization_type in ["LN", "LNPre"]:
                         del state_dict[f"blocks.{l}.mlp.ln.b"]
