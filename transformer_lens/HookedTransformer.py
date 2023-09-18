@@ -1298,7 +1298,7 @@ class HookedTransformer(HookedRootModule):
                             "mean",
                         )
                     del state_dict[f"blocks.{l}.mlp.ln.w"]
-                    if self.cfg.normalization_type in ["LN", "LNPre"]:
+                    if self.cfg.normalization_type not in ["RMS", "RMSPre"]:
                         del state_dict[f"blocks.{l}.mlp.ln.b"]
         
         # Fold ln_final into Unembed
