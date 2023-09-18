@@ -1312,10 +1312,11 @@ class HookedTransformer(HookedRootModule):
             state_dict[f"unembed.W_U"] * state_dict[f"ln_final.w"][:, None]
         )
 
-        # Center the weights that read in from the LayerNormPre
-        state_dict[f"unembed.W_U"] -= einops.reduce(
-            state_dict[f"unembed.W_U"], "d_model d_vocab -> 1 d_vocab", "mean"
-        )
+        if not self.cfg.final_rms:
+            # Center the weights that read in from the LayerNormPre
+            state_dict[f"unembed.W_U"] -= einops.reduce(
+                state_dict[f"unembed.W_U"], "d_model d_vocab -> 1 d_vocab", "mean"
+            )
 
         del state_dict[f"ln_final.w"]
         return state_dict
