@@ -1103,9 +1103,11 @@ def get_tokens_with_bos_removed(tokenizer, tokens):
     Returns:
         torch.Tensor: The tokenized input with the bos token removed.
     """
+    if not ((tokens == tokenizer.bos_token_id).sum(-1) > 0).all():
+        return tokens
+    
     if tokenizer.padding_side == "right":
         return tokens[..., 1:]
-
     else:
         bos_removed_shape = list(tokens.shape)
         bos_removed_shape[-1] -= 1
