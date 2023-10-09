@@ -1543,7 +1543,7 @@ class HookedTransformer(HookedRootModule):
     @torch.inference_mode()
     def generate(
         self,
-        input: Union[str, Float[torch.Tensor, "batch pos"]] = "",
+        input: Union[str, List[str], Float[torch.Tensor, "batch pos"]] = "",
         max_new_tokens: int = 10,
         stop_at_eos: bool = True,
         eos_token_id: Optional[int] = None,
@@ -1558,7 +1558,7 @@ class HookedTransformer(HookedRootModule):
         padding_side: Union[Literal["left", "right"], None] = USE_DEFAULT_VALUE,
         return_type: Optional[str] = "input",
         verbose: bool = True,
-    ) -> Union[Int[torch.Tensor, "batch pos_plus_new_tokens"], str]:
+    ) -> Union[str, List[str], Int[torch.Tensor, "batch pos_plus_new_tokens"]]:
         """
         Sample tokens from the model until the model outputs eos_token or max_new_tokens is reached.
 
@@ -1571,7 +1571,8 @@ class HookedTransformer(HookedRootModule):
         instead.
 
         Args:
-            input (Union[str, Int[torch.Tensor, "batch pos"])]): Either a batch of tokens ([batch, pos]) or a text string (this will be converted to a batch of tokens with batch size 1)
+            input (Union[str, List[str], Int[torch.Tensor, "batch pos"])]): Either a batch of tokens ([batch, pos]), a text string (this will be converted to a batch of tokens with batch size 1),
+                or a list of text strings (this will be converted to a batch of tokens with batch size len(input))
             max_new_tokens (int): Maximum number of tokens to generate
             stop_at_eos (bool): If True, stop generating tokens when the model outputs eos_token
             eos_token_id (Optional[Union[int, Sequence]], *optional*): The token ID to use for end of sentence. If None, use the tokenizer's eos_token_id - required if using stop_at_eos.
@@ -1585,16 +1586,25 @@ class HookedTransformer(HookedRootModule):
             prepend_bos (bool, optional): Whether to prepend the BOS token to the input (applicable when input is a string).
                 Defaults to None, implying usage of self.cfg.default_prepend_bos (default is True unless specified otherwise).
                 Pass True or False to override the default.
-            return_type (str, *optional*): The type of the output to return - either a string (str), a tensor of tokens (tensor) or whatever the format of the input was (input).
+            return_type (str, *optional*): The type of the output to return - either a string/list of strings (str), a tensor of tokens (tensor) or whatever the format of the input was (input).
             verbose (bool): If True, show tqdm progress bars for generation
         Returns:
-            outputs (torch.Tensor): [batch, pos + max_new_tokens], generated sequence of new tokens - by default returns same type as input
+            outputs (Union[str, List[str], Int[torch.Tensor, "batch pos_plus_new_tokens"]]): [batch, pos + max_new_tokens], generated sequence of new tokens - 
+                by default returns same type as input
         """
+        if not isinstance(input, torch.Tensor):
+            padding_side = 'left'
+            if return_type == 'input':
+                return_type = 'str'
+        else:
+            return_type = 'tensor'
 
         with utils.LocallyOverridenDefaults(
             self, prepend_bos=prepend_bos, padding_side=padding_side
         ):
-            if type(input) == str:
+            if isinstance(input, torch.Tensor):
+                tokens = input
+            else:
                 # If text, convert to tokens (batch_size=1)
                 assert (
                     self.tokenizer is not None
@@ -1602,14 +1612,6 @@ class HookedTransformer(HookedRootModule):
                 tokens = self.to_tokens(
                     input, prepend_bos=prepend_bos, padding_side=padding_side
                 )
-            else:
-                tokens = input
-
-            if return_type == "input":
-                if type(input) == str:
-                    return_type = "str"
-                else:
-                    return_type = "tensor"
 
             assert isinstance(tokens, torch.Tensor)
             batch_size, ctx_length = tokens.shape
@@ -1721,12 +1723,10 @@ class HookedTransformer(HookedRootModule):
                     break
 
             if return_type == "str":
-                if self.cfg.default_prepend_bos:
-                    # If we prepended a BOS token, remove it when returning output.
-                    return self.tokenizer.decode(tokens[0, 1:])
-                else:
-                    return self.tokenizer.decode(tokens[0])
-
+                generated_strings = self.tokenizer.batch_decode(tokens, skip_special_tokens=True)
+                if len(generated_strings) == 1:
+                    return generated_strings[0]
+                return generated_strings
             else:
                 return tokens
 
