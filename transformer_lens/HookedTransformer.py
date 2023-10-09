@@ -1518,7 +1518,7 @@ class HookedTransformer(HookedRootModule):
                 layer.ln1 = LayerNormPre(self.cfg)
                 layer.ln2 = LayerNormPre(self.cfg)
                 if self.cfg.act_fn.endswith("_ln"):
-                    layer.mlp.ln = LyerNormPre(self.cfg)
+                    layer.mlp.ln = LayerNormPre(self.cfg)
                     
         if fold_ln and self.cfg.normalization_type == "RMS":
             self.cfg.normalization_type = "RMSPre"
